@@ -1,0 +1,35 @@
+services:
+  # The Flask Backend
+  # backend:
+  #   build:
+  #     context: ./backend
+  #   ports:
+  #     - "5000:5000"
+  #   environment:
+  #     - MONGO_URI=mongodb://root:example_password@mongodb:27017/mashup_db?authSource=admin
+  #   depends_on:
+  #     - mongodb
+
+  # The Webapp frontend
+  # frontend:
+  #   build:
+  #     context: ./frontend
+  #   ports:
+  #     - "3000:3000"
+  #   depends_on:
+  #     - backend
+
+  # The Local MongoDB Database
+  mongodb:
+    image: mongo:latest
+    container_name: mashup_mongodb
+    ports:
+      - "27017:27017"
+    environment:
+      - MONGO_INITDB_ROOT_USERNAME=${MONGO_USERNAME}
+      - MONGO_INITDB_ROOT_PASSWORD=${MONGO_PASSWORD}
+    volumes:
+      - mongo_data:/data/db
+
+volumes:
+  mongo_data:
