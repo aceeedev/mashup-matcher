@@ -7,6 +7,7 @@ class AcousticBrainzProvider:
         """Initialize the provider with the AcousticBrainz API base URL."""
         self.api_url = api_url
 
+
     def get_single_tracks(self, mbid: str) -> dict:
         """Fetch low-level data for a single MusicBrainz recording ID."""
         url = f"{self.api_url}/{mbid}/low-level"
