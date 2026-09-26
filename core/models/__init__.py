@@ -1,1 +1,1 @@
-from .track import TrackMetadata, AudioFeatures, AggregatedAudioFeatures, TrackData
+from .track import CamelotKey, TrackMetadata, AudioFeatures, AggregatedAudioFeatures, TrackData
