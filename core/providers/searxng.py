@@ -123,6 +123,30 @@ class KeySearchResult(BaseModel):
         ]
 
 
+class SearchResponse(BaseModel):
+    """Raw SearXNG results plus the signals needed to tell "blocked" apart from "nothing found"."""
+    results: list[dict] = Field(default_factory=list, description="{'url', 'content'} dicts")
+    unresponsive_engines: list[tuple[str, str]] = Field(
+        default_factory=list, description="(engine, reason) pairs SearXNG reported, e.g. ('duckduckgo', 'CAPTCHA')"
+    )
+    rate_limited: bool = Field(default=False, description="SearXNG itself answered HTTP 429")
+
+    @property
+    def blocked(self) -> bool:
+        """True when the search was stopped by rate limiting rather than genuinely finding nothing.
+
+        Engines that are suspended/CAPTCHA'd show up in `unresponsive_engines`; if that leaves
+        no results at all, the empty response says nothing about whether the data exists.
+        """
+        return self.rate_limited or (not self.results and bool(self.unresponsive_engines))
+
+    @property
+    def block_reason(self) -> Optional[str]:
+        if self.rate_limited:
+            return "SearXNG rate limited the request (HTTP 429)"
+        return ", ".join(f"{engine}: {reason}" for engine, reason in self.unresponsive_engines) or None
+
+
 class SearXNGProvider:
     """Provider for searching Camelot keys and BPM via SearXNG snippet extraction."""
 
@@ -168,7 +192,7 @@ class SearXNGProvider:
         engines: Optional[str] = None,
         max_results: int = 5,
         exclude_domains: Optional[Sequence[str]] = None,
-    ) -> list[dict]:
+    ) -> SearchResponse:
         """Query SearXNG and return the top results with their URLs and snippets.
 
         Args:
@@ -179,8 +203,8 @@ class SearXNGProvider:
             exclude_domains: Optional list of domains to filter out (subdomains included).
 
         Returns:
-            A list of dicts with 'url' and 'content' (title + snippet) keys. Empty if
-            there were no results or SearXNG rate limited the request.
+            A SearchResponse whose `results` are dicts with 'url' and 'content' (title + snippet)
+            keys, and whose `blocked` flag says whether rate limiting emptied it.
 
         Raises:
             PermissionError: If SearXNG returns 403 (JSON format not enabled).
@@ -198,7 +222,7 @@ class SearXNGProvider:
 
         if response.status_code == 429:
             logger.warning("SearXNG rate limited the query %r", query)
-            return []
+            return SearchResponse(rate_limited=True)
         if response.status_code == 403:
             raise PermissionError(
                 f"SearXNG returned 403 Forbidden for {self.searxng_url}. "
@@ -211,7 +235,11 @@ class SearXNGProvider:
         response.raise_for_status()
         data = response.json()
 
-        if unresponsive := data.get("unresponsive_engines"):
+        unresponsive: list[tuple[str, str]] = []
+        for entry in data.get("unresponsive_engines") or []:
+            if isinstance(entry, (list, tuple)) and entry:
+                unresponsive.append((str(entry[0]), str(entry[1]) if len(entry) > 1 else "unresponsive"))
+        if unresponsive:
             logger.warning("SearXNG engines unresponsive for %r: %s", query, unresponsive)
 
         excluded = [d.lower() for d in exclude_domains or ()]
@@ -230,7 +258,7 @@ class SearXNGProvider:
             if len(filtered_results) >= max_results:
                 break
 
-        return filtered_results
+        return SearchResponse(results=filtered_results, unresponsive_engines=unresponsive)
 
     @staticmethod
     def _normalise_key(root: str, accidental: Optional[str], mode: str) -> str:
@@ -315,11 +343,12 @@ class SearXNGProvider:
         search_engines: Optional[str] = None,
         max_results: int = 5,
         exclude_domains: Optional[Sequence[str]] = ("tunebat.com", "reddit.com"),
-    ) -> list[dict]:
+    ) -> SearchResponse:
         """Query SearXNG for a song's key/BPM and return the raw {'url', 'content'} results.
 
         Kept separate from `extract` so the raw snippets can be cached (e.g. by
-        TrackManager) and re-extracted later without re-querying SearXNG.
+        TrackManager) and re-extracted later without re-querying SearXNG. Check
+        `SearchResponse.blocked` before treating empty results as "nothing found".
         """
         return await self._search_searxng(
             self.build_query(song_name, artist),
@@ -399,14 +428,14 @@ class SearXNGProvider:
             PermissionError: If SearXNG returns 403 (misconfiguration).
             httpx.HTTPStatusError: If the SearXNG request fails with a non-rate-limit error.
         """
-        results = await self.search(
+        response = await self.search(
             song_name,
             artist,
             search_engines=search_engines,
             max_results=max_results,
             exclude_domains=exclude_domains,
         )
-        return self.extract(song_name, artist, results)
+        return self.extract(song_name, artist, response.results)
 
 
 if __name__ == "__main__":

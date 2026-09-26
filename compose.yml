@@ -16,6 +16,12 @@ services:
       - SEARXNG_URL=${SEARXNG_URL}
       - EMAIL=${EMAIL}
       - FRONTEND_ORIGIN=http://localhost:5173
+      # SearXNG search pacing (see core/services/search_throttle.py) - override in .env
+      - SEARCH_MIN_DELAY=${SEARCH_MIN_DELAY:-2}
+      - SEARCH_MAX_DELAY=${SEARCH_MAX_DELAY:-5}
+      - SEARCH_BACKOFF_BASE=${SEARCH_BACKOFF_BASE:-60}
+      - SEARCH_BACKOFF_MAX=${SEARCH_BACKOFF_MAX:-900}
+      - SEARCH_MAX_CONSECUTIVE_BLOCKS=${SEARCH_MAX_CONSECUTIVE_BLOCKS:-3}
     depends_on:
       - mongodb
       - redis
@@ -43,6 +49,8 @@ services:
       # The browser calls this directly, so it must be host-reachable - not
       # the internal Docker service name.
       - VITE_API_URL=http://localhost:5000
+      # Bind-mount file events don't reach the container on Docker Desktop (Windows) - poll instead
+      - VITE_USE_POLLING=true
     # Bind-mount the source for HMR, but keep the container's own (Linux)
     # node_modules via an anonymous volume, so it isn't shadowed by the bind
     # mount's host (Windows) node_modules - Vite/esbuild ship native binaries.

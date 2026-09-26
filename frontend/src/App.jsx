@@ -1,91 +1,78 @@
 import { useEffect, useState } from 'react'
+import { Link, NavLink, Route, Routes } from 'react-router-dom'
+import ActivityProvider from './ActivityProvider'
+import { api } from './api'
+import { ActivityIndicator } from './components/Activity'
+import AdminPage from './pages/AdminPage'
+import IdeasPage from './pages/IdeasPage'
+import ImportPage from './pages/ImportPage'
+import TrackDetailPage from './pages/TrackDetailPage'
+import TracksPage from './pages/TracksPage'
 
-// The browser calls this directly, so it must be a browser-reachable URL
-// (the published port), not the internal Docker service name.
-const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:5000'
-
-function App() {
+function StatusPill() {
   const [health, setHealth] = useState(null)
-  const [tracks, setTracks] = useState(null)
-  const [error, setError] = useState(null)
+  const [failed, setFailed] = useState(false)
 
   useEffect(() => {
-    fetch(`${API_URL}/api/health`)
-      .then((res) => res.json())
-      .then(setHealth)
-      .catch((err) => setError(err.message))
-
-    fetch(`${API_URL}/api/tracks`)
-      .then((res) => res.json())
-      .then(setTracks)
-      .catch((err) => setError(err.message))
+    api.health().then(setHealth).catch(() => setFailed(true))
   }, [])
 
   const online = health?.mongo && health?.redis
+  const state = failed ? 'err' : health ? (online ? 'ok' : 'err') : ''
+  const label = failed ? 'API unreachable' : health ? (online ? 'All systems online' : 'Degraded') : 'Checking…'
 
+  // While enrichment is running or the search engines are blocked, show that instead
   return (
-    <div className="page">
-      <div className="card">
-        <header className="header">
-          <span className="brand">Mashup Matcher</span>
-          <span className="status-pill">
-            <span className={`status-dot ${health ? (online ? 'ok' : 'err') : ''}`} />
-            {health ? (online ? 'All systems online' : 'Degraded') : 'Checking…'}
-          </span>
-        </header>
+    <Link to="/admin" className="status-pill">
+      <ActivityIndicator
+        fallback={
+          <>
+            <span className={`status-dot ${state}`} />
+            {label}
+          </>
+        }
+      />
+    </Link>
+  )
+}
 
-        <section className="hero">
-          <div>
-            <h1 className="hero-title">Match your next mashup</h1>
-            <p className="hero-sub">
-              Tracks are compared by Camelot key and BPM to find what mixes well together.
-            </p>
-            {error && <p className="error-banner">Error reaching the API: {error}</p>}
-          </div>
+function App() {
+  return (
+    <ActivityProvider>
+      <div className="page">
+        <div className="card">
+          <header className="header">
+            <Link to="/" className="brand">
+              Mashup Matcher
+            </Link>
+            <nav className="nav">
+              <NavLink to="/" end className="nav-link">
+                Tracks
+              </NavLink>
+              <NavLink to="/ideas" className="nav-link">
+                Ideas
+              </NavLink>
+              <NavLink to="/import" className="nav-link">
+                Import
+              </NavLink>
+              <NavLink to="/admin" className="nav-link">
+                Enrichment
+              </NavLink>
+            </nav>
+            <StatusPill />
+          </header>
 
-          <div className="info-grid">
-            <div>
-              <p className="info-label">Database</p>
-              <p className="info-value">
-                Mongo {health ? (health.mongo ? '✅' : '❌') : <span className="muted">…</span>}
-              </p>
-              <p className="info-value">
-                Redis {health ? (health.redis ? '✅' : '❌') : <span className="muted">…</span>}
-              </p>
-            </div>
-            <div>
-              <p className="info-label">Tracks</p>
-              <p className="info-value">{tracks ? tracks.length : <span className="muted">…</span>}</p>
-            </div>
-          </div>
-        </section>
-
-        <section className="tracks-section">
-          <p className="info-label">Recent tracks</p>
-
-          {tracks && tracks.length === 0 && <p className="empty-state">No tracks yet.</p>}
-
-          {tracks && tracks.length > 0 && (
-            <div>
-              {tracks.map((t) => (
-                <div className="track-row" key={t._id}>
-                  <span>
-                    <span className="track-title">{t.title}</span>
-                    {' — '}
-                    <span className="track-artist">{t.artist}</span>
-                  </span>
-                  <span className="track-status">{t.enrichment.status}</span>
-                </div>
-              ))}
-            </div>
-          )}
-        </section>
-
-        <footer className="footer">
-          API: <code>{API_URL}</code>
-        </footer>
+          <Routes>
+            <Route path="/" element={<TracksPage />} />
+            <Route path="/tracks/:id" element={<TrackDetailPage />} />
+            <Route path="/ideas" element={<IdeasPage />} />
+            <Route path="/import" element={<ImportPage />} />
+            <Route path="/admin" element={<AdminPage />} />
+            <Route path="*" element={<p className="empty-state">Page not found.</p>} />
+          </Routes>
+        </div>
       </div>
-    </div>
+    </ActivityProvider>
   )
 }
 
