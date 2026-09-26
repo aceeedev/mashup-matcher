@@ -1,9 +1,22 @@
-from collections import Counter
+from datetime import datetime, timezone
 from enum import Enum
-import statistics
-from typing import List, Optional
+from typing import Annotated, Any, Literal, Optional
 
-from pydantic import BaseModel, Field, computed_field
+from bson import ObjectId
+from pydantic import BaseModel, BeforeValidator, ConfigDict, Field, PlainSerializer
+
+# Validates a Mongo ObjectId (or its string form coming back from JSON) on the way in.
+# Only stringifies on JSON serialisation (model_dump(mode="json")/model_dump_json());
+# plain model_dump() keeps a real ObjectId so it round-trips through pymongo correctly.
+PyObjectId = Annotated[
+    ObjectId,
+    BeforeValidator(lambda v: v if isinstance(v, ObjectId) else ObjectId(v)),
+    PlainSerializer(lambda v: str(v), return_type=str, when_used="json"),
+]
+
+
+def _utcnow() -> datetime:
+    return datetime.now(timezone.utc)
 
 
 class CamelotKey(str, Enum):
@@ -33,88 +46,102 @@ class CamelotKey(str, Enum):
     B12 = "12B"
 
 
-class TrackMetadata(BaseModel):
+class DiscoverySource(BaseModel):
+    """Where a track was discovered from, e.g. a Wikipedia chart list, or a manual add."""
+
+    source: str
+    list: Optional[str] = None
+    year: Optional[int] = None
+
+
+class ExternalIds(BaseModel):
+    """Cross-references to other providers, filled in as they're looked up."""
+
+    musicbrainz_recording_id: Optional[str] = None
+    theaudiodb_track_id: Optional[str] = None
+
+
+class Reading(BaseModel):
+    """A single source's key/BPM finding for a track. Both fields are optional
+    since a source (e.g. one SearXNG search result) may only report one of them."""
+
+    provider: str
+    url: Optional[str] = None
+    bpm: Optional[float] = None
+    camelot_key: Optional[CamelotKey] = None
+    fetched_at: datetime = Field(default_factory=_utcnow)
+
+
+class Consensus(BaseModel):
+    """The current best-guess key/BPM for a track, derived from `Track.readings`.
+
+    Stored (rather than computed on read) so the matching query can index on it.
+    """
+
+    camelot_key: Optional[CamelotKey] = None
+    camelot_number: Optional[int] = None
+    camelot_mode: Optional[Literal["A", "B"]] = None
+    musical_key: Optional[str] = None
+    bpm: Optional[float] = None
+    bpm_folded: Optional[float] = None
+    key_agreement: Optional[float] = None
+    bpm_agreement: Optional[float] = None
+    source_count: int = 0
+    computed_at: Optional[datetime] = None
+
+
+class Enrichment(BaseModel):
+    """Work-queue state for fetching key/BPM data for this track."""
+
+    status: Literal["pending", "done", "not_found", "failed"] = "pending"
+    attempts: int = 0
+    last_attempt_at: Optional[datetime] = None
+    next_attempt_at: Optional[datetime] = None
+    last_error: Optional[str] = None
+
+
+class Track(BaseModel):
+    """One uniquely-identified song. `track_key` is the dedup key (see utils.music.normalise_track_key)."""
+
+    model_config = ConfigDict(populate_by_name=True, arbitrary_types_allowed=True)
+
+    id: Optional[PyObjectId] = Field(default=None, alias="_id")
+    track_key: str
     title: str
     artist: str
-    source: str
+    artists: list[str] = Field(default_factory=list)
+    external_ids: ExternalIds = Field(default_factory=ExternalIds)
+    discovered_from: list[DiscoverySource] = Field(default_factory=list)
+    readings: list[Reading] = Field(default_factory=list)
+    consensus: Optional[Consensus] = None
+    enrichment: Enrichment = Field(default_factory=Enrichment)
+    created_at: datetime = Field(default_factory=_utcnow)
+    updated_at: datetime = Field(default_factory=_utcnow)
 
 
-class AudioFeatures(BaseModel):
-    bpm: float
-    key: CamelotKey
-    source: str
+class SearchCacheEntry(BaseModel):
+    """Raw provider search results for a track, kept so extraction can be improved
+    and re-run later without re-querying (and re-rate-limiting) the provider."""
+
+    model_config = ConfigDict(populate_by_name=True, arbitrary_types_allowed=True)
+
+    id: Optional[PyObjectId] = Field(default=None, alias="_id")
+    track_id: PyObjectId
+    provider: str
+    query: str
+    results: list[dict[str, Any]]
+    fetched_at: datetime = Field(default_factory=_utcnow)
 
 
-class AggregatedAudioFeatures(BaseModel):
-    """Aggregated summary of audio features across multiple sources."""
+class MashupIdea(BaseModel):
+    """A saved pairing of two tracks the user is considering mashing up."""
 
-    average_bpm: Optional[float] = None
-    median_bpm: Optional[float] = None
-    key: Optional[CamelotKey] = None
-    sources: List[str] = Field(default_factory=list)
+    model_config = ConfigDict(populate_by_name=True, arbitrary_types_allowed=True)
 
-
-class TrackData(BaseModel):
-    track_metadata: List[TrackMetadata] = Field(default_factory=list)
-    audio_features: List[AudioFeatures] = Field(default_factory=list)
-
-    @computed_field
-    @property
-    def overall_audio_features(self) -> Optional[AggregatedAudioFeatures]:
-        """Calculates overall/aggregated audio features across all sources."""
-        if not self.audio_features:
-            return None
-
-        bpms = [af.bpm for af in self.audio_features]
-        keys = [af.key for af in self.audio_features]
-        sources = [af.source for af in self.audio_features]
-
-        avg_bpm = round(statistics.mean(bpms), 2)
-        med_bpm = round(statistics.median(bpms), 2)
-        # Most frequent CamelotKey (mode)
-        mode_key = Counter(keys).most_common(1)[0][0]
-
-        return AggregatedAudioFeatures(
-            average_bpm=avg_bpm,
-            median_bpm=med_bpm,
-            key=mode_key,
-            sources=sources,
-        )
-
-    @property
-    def average_bpm(self) -> Optional[float]:
-        """Convenience property for average BPM."""
-        return self.overall_audio_features.average_bpm if self.overall_audio_features else None
-
-    @property
-    def median_bpm(self) -> Optional[float]:
-        """Convenience property for median BPM."""
-        return self.overall_audio_features.median_bpm if self.overall_audio_features else None
-
-    @property
-    def overall_key(self) -> Optional[CamelotKey]:
-        """Convenience property for the consensus / most frequent Camelot key."""
-        return self.overall_audio_features.key if self.overall_audio_features else None
-
-    @property
-    def primary_metadata(self) -> Optional[TrackMetadata]:
-        """Returns the primary (first available) metadata record."""
-        return self.track_metadata[0] if self.track_metadata else None
-
-    @property
-    def title(self) -> Optional[str]:
-        """Convenience property for track title."""
-        return self.primary_metadata.title if self.primary_metadata else None
-
-    @property
-    def artist(self) -> Optional[str]:
-        """Convenience property for artist name."""
-        return self.primary_metadata.artist if self.primary_metadata else None
-
-    def add_metadata(self, metadata: TrackMetadata) -> None:
-        """Add a new metadata record from a source."""
-        self.track_metadata.append(metadata)
-
-    def add_audio_features(self, features: AudioFeatures) -> None:
-        """Add a new audio feature record from a source."""
-        self.audio_features.append(features)
+    id: Optional[PyObjectId] = Field(default=None, alias="_id")
+    pair_key: str
+    track_ids: list[PyObjectId]
+    score: Optional[float] = None
+    notes: str = ""
+    status: Literal["idea", "tried", "made"] = "idea"
+    created_at: datetime = Field(default_factory=_utcnow)

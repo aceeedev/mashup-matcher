@@ -11,48 +11,16 @@ import dotenv
 import httpx
 from pydantic import BaseModel, Field
 
-from models.track import AudioFeatures, CamelotKey
+from models.track import CamelotKey, Reading
+from utils.music import CAMELOT_TO_KEY_NAME as _CAMELOT_TO_KEY
+from utils.music import KEY_NAME_TO_CAMELOT as _KEY_TO_CAMELOT
 
 dotenv.load_dotenv()
 
 logger = logging.getLogger(__name__)
 
-# ---------------------------------------------------------------------------
-# Camelot wheel lookup: normalised "note mode" -> Camelot position
-# ---------------------------------------------------------------------------
-_KEY_TO_CAMELOT: dict[str, str] = {
-    # Major (B)
-    "c major": "8B",  "c# major": "3B",  "db major": "3B",
-    "d major": "10B", "d# major": "5B",  "eb major": "5B",
-    "e major": "12B",
-    "f major": "7B",  "f# major": "2B",  "gb major": "2B",
-    "g major": "9B",  "g# major": "4B",  "ab major": "4B",
-    "a major": "11B", "a# major": "6B",  "bb major": "6B",
-    "b major": "1B",
-    # Minor (A)
-    "c minor": "5A",  "c# minor": "12A", "db minor": "12A",
-    "d minor": "7A",  "d# minor": "2A",  "eb minor": "2A",
-    "e minor": "9A",
-    "f minor": "4A",  "f# minor": "11A", "gb minor": "11A",
-    "g minor": "6A",  "g# minor": "1A",  "ab minor": "1A",
-    "a minor": "8A",  "a# minor": "3A",  "bb minor": "3A",
-    "b minor": "10A",
-}
-
-_CAMELOT_TO_KEY: dict[str, str] = {
-    "1A": "Ab Minor", "1B": "B Major",
-    "2A": "Eb Minor", "2B": "F# Major",
-    "3A": "Bb Minor", "3B": "Db Major",
-    "4A": "F Minor",  "4B": "Ab Major",
-    "5A": "C Minor",  "5B": "Eb Major",
-    "6A": "G Minor",  "6B": "Bb Major",
-    "7A": "D Minor",  "7B": "F Major",
-    "8A": "A Minor",  "8B": "C Major",
-    "9A": "E Minor",  "9B": "G Major",
-    "10A": "B Minor", "10B": "D Major",
-    "11A": "F# Minor", "11B": "A Major",
-    "12A": "C# Minor", "12B": "E Major",
-}
+# Camelot wheel lookup tables now live in utils.music (shared with TrackManager);
+# imported above under their old names so the rest of this file is unchanged.
 
 # Non-ASCII characters are written as escapes so the file survives being re-saved with the wrong encoding
 _ACCIDENTALS = "#♯b♭"     # #, ♯, b, ♭
@@ -146,11 +114,13 @@ class KeySearchResult(BaseModel):
         description="Per-site findings used to determine the result",
     )
 
-    def to_audio_features(self, source: str = "searxng") -> Optional[AudioFeatures]:
-        """Convert to an AudioFeatures record, or None if either the key or BPM is missing."""
-        if self.bpm is None or self.camelot_key is None:
-            return None
-        return AudioFeatures(bpm=self.bpm, key=self.camelot_key, source=source)
+    def to_readings(self, provider: str = "searxng") -> list[Reading]:
+        """Convert each per-source finding into a Reading, for TrackManager to store on the track."""
+        return [
+            Reading(provider=provider, url=s.url, bpm=s.bpm, camelot_key=s.camelot_key)
+            for s in self.sources
+            if s.bpm is not None or s.camelot_key is not None
+        ]
 
 
 class SearXNGProvider:
@@ -334,45 +304,37 @@ class SearXNGProvider:
                 raw[bpm] += weight
         return raw.most_common(1)[0][0]
 
-    async def get_camelot_key(
+    @staticmethod
+    def build_query(song_name: str, artist: str) -> str:
+        return f"{song_name} {artist} camelot key bpm"
+
+    async def search(
         self,
         song_name: str,
         artist: str,
         search_engines: Optional[str] = None,
         max_results: int = 5,
         exclude_domains: Optional[Sequence[str]] = ("tunebat.com", "reddit.com"),
-    ) -> Optional[KeySearchResult]:
-        """Search for and extract the Camelot key and BPM for a given song and artist.
+    ) -> list[dict]:
+        """Query SearXNG for a song's key/BPM and return the raw {'url', 'content'} results.
 
-        Queries SearXNG, extracts the Camelot key and BPM from each result snippet
-        individually, then returns the weighted consensus along with the full
-        per-source breakdown. Results that mention the song name count double.
-
-        Args:
-            song_name: The name of the song.
-            artist: The name of the artist.
-            search_engines: Comma-separated SearXNG engines to use.
-                            Defaults to None (uses all configured active engines in SearXNG).
-            max_results: Number of search result snippets to scan.
-            exclude_domains: Domains to exclude from search results.
-                             Defaults to ("tunebat.com", "reddit.com").
-
-        Returns:
-            A KeySearchResult with sources, or None if neither key nor BPM could be found
-            or if SearXNG rate limited the request.
-
-        Raises:
-            PermissionError: If SearXNG returns 403 (misconfiguration).
-            httpx.HTTPStatusError: If the SearXNG request fails with a non-rate-limit error.
+        Kept separate from `extract` so the raw snippets can be cached (e.g. by
+        TrackManager) and re-extracted later without re-querying SearXNG.
         """
-        query = f"{song_name} {artist} camelot key bpm"
-        results = await self._search_searxng(
-            query,
+        return await self._search_searxng(
+            self.build_query(song_name, artist),
             engines=search_engines,
             max_results=max_results,
             exclude_domains=exclude_domains,
         )
 
+    @classmethod
+    def extract(cls, song_name: str, artist: str, results: list[dict]) -> Optional[KeySearchResult]:
+        """Extract the Camelot key and BPM consensus from raw search results (see `search`).
+
+        Results that mention the song name count double, since snippets that don't
+        are often "similar songs" lists for other tracks.
+        """
         sources: list[KeySource] = []
         key_votes: Counter[str] = Counter()
         bpm_votes: list[tuple[float, int]] = []
@@ -383,12 +345,11 @@ class SearXNGProvider:
             if not content:
                 continue
 
-            camelot_key = self._extract_camelot_from_text(content)
-            bpm = self._extract_bpm_from_text(content)
+            camelot_key = cls._extract_camelot_from_text(content)
+            bpm = cls._extract_bpm_from_text(content)
             if camelot_key is None and bpm is None:
                 continue
 
-            # Snippets that don't mention the song are often "similar songs" lists for other tracks
             weight = 2 if song_folded in content.casefold() else 1
             if camelot_key:
                 key_votes[camelot_key] += weight
@@ -414,9 +375,38 @@ class SearXNGProvider:
             artist=artist,
             musical_key=_CAMELOT_TO_KEY.get(consensus_camelot) if consensus_camelot else None,
             camelot_key=consensus_camelot,
-            bpm=self._consensus_bpm(bpm_votes),
+            bpm=cls._consensus_bpm(bpm_votes),
             sources=sources,
         )
+
+    async def get_camelot_key(
+        self,
+        song_name: str,
+        artist: str,
+        search_engines: Optional[str] = None,
+        max_results: int = 5,
+        exclude_domains: Optional[Sequence[str]] = ("tunebat.com", "reddit.com"),
+    ) -> Optional[KeySearchResult]:
+        """Search for and extract the Camelot key and BPM for a given song and artist.
+
+        Equivalent to `extract(song_name, artist, await search(...))`; see those for details.
+
+        Returns:
+            A KeySearchResult with sources, or None if neither key nor BPM could be found
+            or if SearXNG rate limited the request.
+
+        Raises:
+            PermissionError: If SearXNG returns 403 (misconfiguration).
+            httpx.HTTPStatusError: If the SearXNG request fails with a non-rate-limit error.
+        """
+        results = await self.search(
+            song_name,
+            artist,
+            search_engines=search_engines,
+            max_results=max_results,
+            exclude_domains=exclude_domains,
+        )
+        return self.extract(song_name, artist, results)
 
 
 if __name__ == "__main__":
