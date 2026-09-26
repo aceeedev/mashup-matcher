@@ -3,6 +3,7 @@ import os
 from bson import ObjectId
 from bson.errors import InvalidId
 from flask import Flask, abort, jsonify, request
+from flask_cors import CORS
 from redis import Redis
 from rq import Queue
 from rq.job import Job
@@ -16,6 +17,12 @@ from services.track_manager import TrackManager
 
 def create_app() -> Flask:
     app = Flask(__name__)
+
+    # The frontend runs on a different origin (different port = different origin
+    # to the browser), so without this the browser blocks every response with a
+    # "Failed to fetch" even though the backend itself answers fine.
+    frontend_origins = os.getenv("FRONTEND_ORIGIN", "http://localhost:5173").split(",")
+    CORS(app, origins=frontend_origins)
 
     db = DatabaseManager()
     db.ensure_indexes()

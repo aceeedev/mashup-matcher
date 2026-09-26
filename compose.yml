@@ -15,6 +15,7 @@ services:
       - REDIS_URL=redis://redis:6379/0
       - SEARXNG_URL=${SEARXNG_URL}
       - EMAIL=${EMAIL}
+      - FRONTEND_ORIGIN=http://localhost:5173
     depends_on:
       - mongodb
       - redis
@@ -31,14 +32,25 @@ services:
       - mongodb
       - redis
 
-  # The Webapp frontend
-  # frontend:
-  #   build:
-  #     context: ./frontend
-  #   ports:
-  #     - "3000:3000"
-  #   depends_on:
-  #     - backend
+  # The Webapp frontend (dev server w/ HMR - see frontend/Dockerfile)
+  frontend:
+    build:
+      context: ./frontend
+    container_name: mashup_frontend
+    ports:
+      - "5173:5173"
+    environment:
+      # The browser calls this directly, so it must be host-reachable - not
+      # the internal Docker service name.
+      - VITE_API_URL=http://localhost:5000
+    # Bind-mount the source for HMR, but keep the container's own (Linux)
+    # node_modules via an anonymous volume, so it isn't shadowed by the bind
+    # mount's host (Windows) node_modules - Vite/esbuild ship native binaries.
+    volumes:
+      - ./frontend:/app
+      - /app/node_modules
+    depends_on:
+      - backend
 
   # The Local MongoDB Database
   mongodb:

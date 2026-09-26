@@ -5,6 +5,7 @@ description = "Flask API + RQ worker for mashup-matcher"
 requires-python = ">=3.11"
 dependencies = [
     "flask>=3.1,<4",
+    "flask-cors>=4,<6",
     "gunicorn>=23,<24",
     "redis>=5.2,<6",
     "rq>=2.3,<3",
