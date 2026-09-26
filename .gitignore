@@ -1,2 +1,6 @@
 .env
 .vscode/*
+
+# Bind-mounted MongoDB/Redis data (see compose.yml) - lives in the repo folder
+# for easy access/backup, but the actual data files should never be committed.
+/data/

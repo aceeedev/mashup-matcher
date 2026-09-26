@@ -62,6 +62,14 @@ class DatabaseManager:
     def mashup_ideas(self) -> Collection:
         return self.db["mashup_ideas"]
 
+    def ping(self) -> bool:
+        """True if Mongo is reachable, False otherwise (never raises)."""
+        try:
+            self.client.admin.command("ping")
+            return True
+        except Exception:
+            return False
+
     def ensure_indexes(self) -> None:
         """Create the indexes the app's queries and dedup logic rely on. Safe to call repeatedly."""
         self.tracks.create_index([("track_key", ASCENDING)], unique=True)

@@ -1,14 +1,35 @@
 services:
   # The Flask Backend
-  # backend:
-  #   build:
-  #     context: ./backend
-  #   ports:
-  #     - "5000:5000"
-  #   environment:
-  #     - MONGO_URI=mongodb://root:example_password@mongodb:27017/mashup_db?authSource=admin
-  #   depends_on:
-  #     - mongodb
+  backend:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    image: mashup_matcher_backend
+    container_name: mashup_backend
+    ports:
+      - "5000:5000"
+    environment: &backend_env
+      - MONGO_USERNAME=${MONGO_USERNAME}
+      - MONGO_PASSWORD=${MONGO_PASSWORD}
+      - MONGO_HOST=mongodb:27017
+      - REDIS_URL=redis://redis:6379/0
+      - SEARXNG_URL=${SEARXNG_URL}
+      - EMAIL=${EMAIL}
+    depends_on:
+      - mongodb
+      - redis
+
+  # Same image as `backend` (built once, tagged above, and reused here - no
+  # separate build section needed), but runs background jobs (SearXNG
+  # enrichment, cache recompute) instead of serving HTTP. See backend/jobs.py.
+  worker:
+    image: mashup_matcher_backend
+    container_name: mashup_worker
+    command: ["rq", "worker", "--url", "redis://redis:6379/0", "mashup_matcher"]
+    environment: *backend_env
+    depends_on:
+      - mongodb
+      - redis
 
   # The Webapp frontend
   # frontend:
@@ -29,7 +50,13 @@ services:
       - MONGO_INITDB_ROOT_USERNAME=${MONGO_USERNAME}
       - MONGO_INITDB_ROOT_PASSWORD=${MONGO_PASSWORD}
     volumes:
-      - mongo_data:/data/db
+      - ./data/mongo:/data/db
 
-volumes:
-  mongo_data:
+  # Backing queue for the RQ background jobs `backend` enqueues and `worker` runs.
+  # --appendonly so queued/result data survives a restart, not just periodic RDB snapshots.
+  redis:
+    image: redis:7-alpine
+    container_name: mashup_redis
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - ./data/redis:/data

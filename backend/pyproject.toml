@@ -1,0 +1,23 @@
+[project]
+name = "mashup-backend"
+version = "0.1.0"
+description = "Flask API + RQ worker for mashup-matcher"
+requires-python = ">=3.11"
+dependencies = [
+    "flask>=3.1,<4",
+    "gunicorn>=23,<24",
+    "redis>=5.2,<6",
+    "rq>=2.3,<3",
+    # mashup-core (models/providers/services/utils) is installed separately from
+    # ../core in the Dockerfile - pip has no clean way to express a local sibling
+    # path dependency here without a workspace tool (uv/poetry), so it's kept out
+    # of this list rather than faked with a fragile file:// URL.
+]
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+# app.py/jobs.py are loose top-level modules, not a package.
+[tool.setuptools]
+py-modules = ["app", "jobs"]

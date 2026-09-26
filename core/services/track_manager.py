@@ -1,4 +1,5 @@
 import asyncio
+import re
 from collections import Counter
 from collections.abc import Callable
 from datetime import datetime, timedelta, timezone
@@ -106,6 +107,29 @@ class TrackManager:
     def get_track(self, track_id: ObjectId) -> Optional[Track]:
         doc = self.db.tracks.find_one({"_id": track_id})
         return Track.model_validate(doc) if doc else None
+
+    def list_tracks(
+        self,
+        q: Optional[str] = None,
+        status: Optional[str] = None,
+        limit: int = 50,
+        offset: int = 0,
+    ) -> list[Track]:
+        """List tracks, optionally filtered by a case-insensitive title/artist substring and/or enrichment status."""
+        query: dict = {}
+        if status:
+            query["enrichment.status"] = status
+        if q:
+            pattern = re.escape(q)
+            query["$or"] = [{"title": {"$regex": pattern, "$options": "i"}}, {"artist": {"$regex": pattern, "$options": "i"}}]
+
+        docs = self.db.tracks.find(query).skip(offset).limit(limit)
+        return [Track.model_validate(doc) for doc in docs]
+
+    def enrichment_status_counts(self) -> dict[str, int]:
+        """Count tracks by `enrichment.status`, e.g. {"pending": 3, "done": 40, "not_found": 5, "failed": 1}."""
+        pipeline = [{"$group": {"_id": "$enrichment.status", "count": {"$sum": 1}}}]
+        return {doc["_id"]: doc["count"] for doc in self.db.tracks.aggregate(pipeline)}
 
     # -- Storing provider readings and computing consensus -------------------
 
@@ -253,6 +277,35 @@ class TrackManager:
             return_document=ReturnDocument.AFTER,
         )
         return doc["_id"]
+
+    def list_mashup_ideas(self, status: Optional[str] = None, limit: int = 50, offset: int = 0) -> list[MashupIdea]:
+        query = {"status": status} if status else {}
+        docs = self.db.mashup_ideas.find(query).sort("created_at", -1).skip(offset).limit(limit)
+        return [MashupIdea.model_validate(doc) for doc in docs]
+
+    def update_mashup_idea(
+        self,
+        idea_id: ObjectId,
+        status: Optional[str] = None,
+        notes: Optional[str] = None,
+        score: Optional[float] = None,
+    ) -> Optional[MashupIdea]:
+        """Update whichever of status/notes/score are given. Fields left as None are left unchanged."""
+        changes = {k: v for k, v in {"status": status, "notes": notes, "score": score}.items() if v is not None}
+        if not changes:
+            return self.get_mashup_idea(idea_id)
+
+        doc = self.db.mashup_ideas.find_one_and_update(
+            {"_id": idea_id}, {"$set": changes}, return_document=ReturnDocument.AFTER
+        )
+        return MashupIdea.model_validate(doc) if doc else None
+
+    def get_mashup_idea(self, idea_id: ObjectId) -> Optional[MashupIdea]:
+        doc = self.db.mashup_ideas.find_one({"_id": idea_id})
+        return MashupIdea.model_validate(doc) if doc else None
+
+    def delete_mashup_idea(self, idea_id: ObjectId) -> bool:
+        return self.db.mashup_ideas.delete_one({"_id": idea_id}).deleted_count > 0
 
     # -- Importing from Wikipedia -----------------------------------------------
 

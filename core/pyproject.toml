@@ -1,0 +1,26 @@
+[project]
+name = "mashup-core"
+version = "0.1.0"
+description = "Providers, models, and services for mashup-matcher"
+requires-python = ">=3.11"
+dependencies = [
+    "pydantic>=2.13,<3",
+    "pymongo>=4.18,<5",
+    "httpx>=0.28,<1",
+    "python-dotenv>=1.2,<2",
+    "requests>=2.34,<3",
+    "pandas>=3.0,<4",
+    "lxml>=6.1,<7",  # HTML parser backend for pandas.read_html, used by providers.wikipedia
+]
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+# core/ isn't itself a package (no top-level __init__.py) - it's a directory of
+# sibling packages imported directly (e.g. `from services.database_manager import ...`,
+# not `from core.services...`). This installs them as top-level packages so that
+# import style keeps working once `pip install ./core` replaces the venv/PYTHONPATH setup.
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["models*", "providers*", "services*", "utils*"]
